@@ -426,7 +426,7 @@ impl<T, A: Alloc> RawVec<T, A> {
         used_capacity: usize,
         needed_extra_capacity: usize,
     ) -> Result<(), TryReserveError> {
-        self.reserve_internal(used_capacity, needed_extra_capacity, Fallible, Amortized)
+        self.reserve_internal(used_capacity, needed_extra_capacity, Fallible, Amortized).or_else(|_| self.reserve_internal(used_capacity, needed_extra_capacity, Fallible, Exact))
     }
 
     /// Ensures that the buffer contains at least enough space to hold
@@ -482,7 +482,8 @@ impl<T, A: Alloc> RawVec<T, A> {
     /// # }
     /// ```
     pub fn reserve(&mut self, used_capacity: usize, needed_extra_capacity: usize) {
-        match self.reserve_internal(used_capacity, needed_extra_capacity, Infallible, Amortized) {
+        if self.reserve_internal(used_capacity, needed_extra_capacity, Fallible, Amortized).is_err()
+        match self.reserve_internal(used_capacity, needed_extra_capacity, Infallible, Exact) {
             Err(CapacityOverflow) => capacity_overflow(),
             Err(AllocError { .. }) => unreachable!(),
             Ok(()) => { /* yay */ }
@@ -533,7 +534,9 @@ impl<T, A: Alloc> RawVec<T, A> {
 
             let new_layout = Layout::new::<T>().repeat(new_cap).unwrap().0;
             // FIXME: may crash and burn on over-reserve
-            alloc_guard(new_layout.size()).unwrap_or_else(|_| capacity_overflow());
+            if alloc_guard(new_layout.size()).is_err(){
+                return false; //? Seems too easy
+            }//.unwrap_or_else(|_| capacity_overflow());
             match self.a.grow_in_place(
                 NonNull::from(self.ptr).cast(),
                 old_layout,
