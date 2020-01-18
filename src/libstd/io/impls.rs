@@ -337,14 +337,46 @@ impl Write for &mut [u8] {
 impl Write for Vec<u8> {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if unlikely(self.try_reserve(buf.len()).is_err()){
+            return write_slow(buf);
+        }
+        
         self.extend_from_slice(buf);
         Ok(buf.len())
     }
+    
+    #[inline(never)] //todo: check if inline and rename to write_low_memory
+    fn write_slow(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.try_reserve_exact(buf.len()).is_err() { //re_exact to use the least amount of memory
+            let free_space = self.capacity()-self.len();
+            if free_space > 0 {
+                //try not to fail by still writing part of the buffer.
+                self.extend_from_slice(buf[0..max(free_space, buf.len())]);
+            } else if buf.len() > 1 {
+                //try to write a single byte to force reallocation, going to the slow path to minimize the allocation size
+                return self.write_slow(buf[0..1]); //todo: check if more beautiful way
+            } else {
+                return Err(WriteZero, "Can't allocate memory"); //impl From<ErrorKind> for Error https://doc.rust-lang.org/std/io/struct.Error.html#impl-From%3CErrorKind%3E Intended for use for errors not exposed to the user, where allocating onto the heap (for normal construction via Error::new) is too costly.
+
+            }
+        }
+        
+        self.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    
+    
 
     #[inline]
     fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         let len = bufs.iter().map(|b| b.len()).sum();
-        self.reserve(len);
+        if unlikely(self.try_reserve(len).is_err()) {
+            if unlikely(len == 0) { //When reading this later: why would try_reserve fall when called with len=0, is this needed?
+                return Ok(len);
+            }
+            //writing the first non-empty slice
+            return self.write_slow(bufs.iter().find(|b| likely(!b.is_empty())).expect("len is not 0, but no non-empty buffers found")); //todo:replace with unwrap, also with write_slow, since write is inline
+        }; 
         for buf in bufs {
             self.extend_from_slice(buf);
         }
@@ -353,6 +385,11 @@ impl Write for Vec<u8> {
 
     #[inline]
     fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        if unlikely(self.try_reserve(buf.len()).is_err()){
+            //returning an error now, since we're going to fail anyway 
+            //todo: fix oom case where try_reserve fails, but try_reserve_exact doesn't
+            return err()
+        }
         self.extend_from_slice(buf);
         Ok(())
     }
